@@ -66,10 +66,12 @@ HTML = """
   .free{background:var(--bgfree)}
   .taken{background:var(--bgtaken);color:#555}
   .cell small{display:block;font-size:12px;color:#666;margin-top:4px}
-  .topbar{display:flex;gap:8px;align-items:center;margin:12px 0 16px}
-  input[type=text]{padding:8px;border:1px solid #ccc;border-radius:8px;flex:1;min-width:180px}
+  .topbar{display:flex;gap:8px;align-items:center;margin:12px 0 16px; flex-wrap:wrap}
+  input[type=text]{padding:8px;border:1px solid #ccc;border-radius:8px;min-width:180px}
   button{padding:8px 10px;border:0;border-radius:10px;cursor:pointer}
   .pick{background:var(--primary);color:white}
+  .admin-dl{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .admin-dl input{flex:0 0 200px}
   .disabled{opacity:.6;cursor:not-allowed}
   details{margin-top:24px}
   .row{display:flex;gap:8px;align-items:center;margin:6px 0}
@@ -94,8 +96,15 @@ HTML = """
   <div class="meta">Números libres: <strong id="free-count">{{ free_count }}</strong> / 100</div>
 
   <div class="topbar">
-    <input id="nombre" type="text" placeholder="Tu nombre (obligatorio)">
+    <input id="nombre" type="text" placeholder="Tu nombre (obligatorio)" />
     <button onclick="share()">Compartir enlace</button>
+
+    <!-- Descarga para organizador por clave (ADMIN_KEY) -->
+    <div class="admin-dl">
+      <input id="adminKeyForDownload" type="text" placeholder="ADMIN_KEY para descargar Excel" />
+      <button onclick="downloadExcel()">Exportar Excel</button>
+      <button onclick="downloadExcelOcupados()">Exportar ocupados + total</button>
+    </div>
   </div>
 
   <div class="grid" id="grid">
@@ -142,6 +151,18 @@ function share(){
   else { navigator.clipboard.writeText(window.location.href); alert("Enlace copiado. Pegalo en el grupo de WhatsApp."); }
 }
 
+// Botones de descarga con clave
+function downloadExcel(){
+  const k = (document.getElementById('adminKeyForDownload') || {}).value || "";
+  if(!k){ alert("Ingresá la ADMIN_KEY para descargar."); return; }
+  window.location.href = `/export.xlsx?key=${encodeURIComponent(k)}`;
+}
+function downloadExcelOcupados(){
+  const k = (document.getElementById('adminKeyForDownload') || {}).value || "";
+  if(!k){ alert("Ingresá la ADMIN_KEY para descargar."); return; }
+  window.location.href = `/export-ocupados.xlsx?key=${encodeURIComponent(k)}`;
+}
+
 // Render helpers
 function renderFreeCell(num){
   return `
@@ -166,7 +187,6 @@ async function pickNumber(num, btn){
     return;
   }
 
-  // Confirmación
   if(!confirm(`¿Confirmás elegir el número ${num} a nombre de "${name}"?`)){
     return;
   }
@@ -448,5 +468,4 @@ def admin_logout():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
-
 
