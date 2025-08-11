@@ -1,8 +1,9 @@
-import os, threading, datetime
-from flask import Flask, render_template_string, redirect, url_for, request, jsonify
+import os, threading, datetime, io
+from flask import Flask, render_template_string, redirect, url_for, request, jsonify, send_file
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.exc import OperationalError
+from openpyxl import Workbook
 
 # --- Config base de datos (Postgres si DATABASE_URL, si no SQLite) ---
 DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///state.db")
@@ -12,9 +13,19 @@ Base = declarative_base()
 lock = threading.Lock()
 
 # --- Claves de administración ---
-# ADMIN_KEY: protege las acciones (liberar/resetear).
-# ADMIN_VIEW_KEY: muestra/oculta el panel admin vía ?admin=ADMIN_VIEW_KEY
+# ADMIN_KEY: protege las acciones (liberar/resetear/exportar).
+# ADMIN_VIEW_KEY: controla la visibilidad del panel admin.
 ADMIN_VIEW_KEY = os.environ.get("ADMIN_VIEW_KEY", "")
+
+# --- Datos de la rifa (configurables por variables de entorno) ---
+RAFFLE_TITLE = os.environ.get("RAFFLE_TITLE", "Rifa: Bolsa de Golf Wilson")
+RAFFLE_PRICE = os.environ.get("RAFFLE_PRICE", "Valor 10 pesos")
+RAFFLE_DATE  = os.environ.get("RAFFLE_DATE",  "Se sorteará el 13 de Septiembre")
+# Precio numérico por número para calcular total
+try:
+    PRICE_PER_NUMBER = float(os.environ.get("RAFFLE_PRICE_VALUE", "10"))
+except ValueError:
+    PRICE_PER_NUMBER = 10.0
 
 class NumberPick(Base):
     __tablename__ = "number_picks"
@@ -44,21 +55,27 @@ HTML = """
 <html lang="es">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Rifa 00–99</title>
+<title>{{ raffle_title }}</title>
 <style>
+  :root{ --primary:#14ae5c; --muted:#555; --bgfree:#f6fff6; --bgtaken:#fff4f4; }
   body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Helvetica,Arial,sans-serif;margin:20px}
-  .wrap{max-width:900px;margin:auto}
-  h1{margin:0 0 8px}
-  .meta{color:#555;margin-bottom:16px}
+  .wrap{max-width:920px;margin:auto}
+  h1{margin:0 0 4px}
+  .meta{color:var(--muted);margin-bottom:16px}
+  .banner{
+    border:1px solid #e5e5e5; border-radius:14px; padding:12px 14px; margin:8px 0 16px;
+    display:flex; gap:10px; align-items:center; background:#fafafa;
+  }
+  .badge{background:var(--primary);color:#fff;padding:4px 10px;border-radius:999px;font-weight:600}
   .grid{display:grid;grid-template-columns:repeat(10,1fr);gap:8px}
   .cell{padding:10px;border-radius:10px;text-align:center;border:1px solid #ddd}
-  .free{background:#f6fff6}
-  .taken{background:#fff4f4;color:#555}
+  .free{background:var(--bgfree)}
+  .taken{background:var(--bgtaken);color:#555}
   .cell small{display:block;font-size:12px;color:#666;margin-top:4px}
   .topbar{display:flex;gap:8px;align-items:center;margin:12px 0 16px}
   input[type=text]{padding:8px;border:1px solid #ccc;border-radius:8px;flex:1;min-width:160px}
   button{padding:8px 10px;border:0;border-radius:10px;cursor:pointer}
-  .pick{background:#14ae5c;color:white}
+  .pick{background:var(--primary);color:white}
   .disabled{opacity:.6;cursor:not-allowed}
   details{margin-top:24px}
   .row{display:flex;gap:8px;align-items:center;margin:6px 0}
@@ -67,28 +84,39 @@ HTML = """
 </head>
 <body>
 <div class="wrap">
-  <h1>Rifa 00–99</h1>
-  <div class="meta">Números libres: <strong>{{ free_count }}</strong> / 100</div>
+  <h1>{{ raffle_title }}</h1>
+  <div class="banner">
+    <span class="badge">Rifa</span>
+    <div>
+      <div><strong>{{ raffle_price }}</strong></div>
+      <div>{{ raffle_date }}</div>
+    </div>
+  </div>
+
+  <div class="meta">Números libres: <strong id="free-count">{{ free_count }}</strong> / 100</div>
 
   <div class="topbar">
     <input id="nombre" type="text" placeholder="Tu nombre (obligatorio)">
     <button onclick="share()">Compartir enlace</button>
   </div>
 
-  <div class="grid">
+  <div class="grid" id="grid">
     {% for n in numbers %}
-      {% if not n.taken %}
-        <form class="cell free" method="post" action="{{ url_for('pick', num='%02d' % n.id) }}" onsubmit="return ensureName(this)">
-          <div class="mono"><strong>{{ "%02d" % n.id }}</strong></div>
-          <input type="hidden" name="name" value="">
-          <button class="pick" type="submit">Elegir</button>
-        </form>
-      {% else %}
-        <div class="cell taken">
-          <div class="mono"><strong>{{ "%02d" % n.id }}</strong></div>
+      <div class="cell {% if n.taken %}taken{% else %}free{% endif %}" 
+           id="cell-{{'%02d' % n.id}}" 
+           data-num="{{'%02d' % n.id}}" 
+           data-taken="{{ 1 if n.taken else 0 }}" 
+           data-name="{{ n.name|e }}">
+        <div class="mono"><strong>{{ "%02d" % n.id }}</strong></div>
+        {% if not n.taken %}
+          <form method="post" action="{{ url_for('pick', num='%02d' % n.id) }}" onsubmit="return ensureName(this)">
+            <input type="hidden" name="name" value="">
+            <button class="pick" type="submit" onclick="this.disabled=true">Elegir</button>
+          </form>
+        {% else %}
           <small>Ocupado por: {{ n.name }}</small>
-        </div>
-      {% endif %}
+        {% endif %}
+      </div>
     {% endfor %}
   </div>
 
@@ -108,6 +136,15 @@ HTML = """
     <div class="row">
       <a href="{{ url_for('api_state') }}">Ver estado (JSON)</a>
     </div>
+    <div class="row">
+      <a href="{{ url_for('export_excel') }}">Exportar a Excel</a>
+    </div>
+    <div class="row">
+      <a href="{{ url_for('export_occupied_excel') }}">Exportar ocupados + total</a>
+    </div>
+    <div class="row">
+      <a href="{{ url_for('admin_logout') }}">Cerrar panel</a>
+    </div>
   </details>
   {% endif %}
 </div>
@@ -121,12 +158,66 @@ function ensureName(form){
 }
 function share(){
   if (navigator.share){
-    navigator.share({title:"Rifa 00–99", url: window.location.href});
+    navigator.share({title:document.title, url: window.location.href});
   }else{
     navigator.clipboard.writeText(window.location.href);
     alert("Enlace copiado. Pegalo en el grupo de WhatsApp.");
   }
 }
+
+// --- Render helpers ---
+function renderFreeCell(num){
+  return `
+    <div class="mono"><strong>${num}</strong></div>
+    <form method="post" action="/pick/${num}" onsubmit="return ensureName(this)">
+      <input type="hidden" name="name" value="">
+      <button class="pick" type="submit" onclick="this.disabled=true">Elegir</button>
+    </form>
+  `;
+}
+function renderTakenCell(num, name){
+  return `
+    <div class="mono"><strong>${num}</strong></div>
+    <small>Ocupado por: ${name ? name.replace(/</g,"&lt;").replace(/>/g,"&gt;") : ""}</small>
+  `;
+}
+
+// --- Polling cada 5s para refrescar estado ---
+async function refreshState(){
+  try{
+    const res = await fetch('/api/state', {cache:'no-store'});
+    if(!res.ok) return;
+    const data = await res.json(); // [{num:"00", taken:true/false, name:""}...]
+    let freeCount = 0;
+    for(const item of data){
+      const id = 'cell-' + item.num;
+      const el = document.getElementById(id);
+      if(!el) continue;
+      const prevTaken = el.getAttribute('data-taken') === '1';
+      if(item.taken){
+        el.classList.remove('free'); el.classList.add('taken');
+        el.setAttribute('data-taken','1');
+        el.setAttribute('data-name', item.name || "");
+        if(!prevTaken){
+          el.innerHTML = renderTakenCell(item.num, item.name || "");
+        }
+      }else{
+        freeCount++;
+        el.classList.remove('taken'); el.classList.add('free');
+        el.setAttribute('data-taken','0');
+        el.setAttribute('data-name','');
+        if(prevTaken){
+          el.innerHTML = renderFreeCell(item.num);
+        }
+      }
+    }
+    const fc = document.getElementById('free-count');
+    if(fc) fc.textContent = freeCount.toString();
+  }catch(e){
+    // si falla una vez, se reintenta en el próximo intervalo
+  }
+}
+setInterval(refreshState, 5000);
 </script>
 </body>
 </html>
@@ -138,8 +229,19 @@ def index():
     try:
         numbers = s.query(NumberPick).order_by(NumberPick.id.asc()).all()
         free_count = sum(1 for n in numbers if not n.taken)
-        show_admin = (request.args.get("admin", "") == ADMIN_VIEW_KEY and ADMIN_VIEW_KEY != "")
-        return render_template_string(HTML, numbers=numbers, free_count=free_count, show_admin=show_admin)
+        show_admin = (
+            (request.args.get("admin", "") == ADMIN_VIEW_KEY and ADMIN_VIEW_KEY != "")
+            or (request.cookies.get("is_admin") == "1")
+        )
+        return render_template_string(
+            HTML,
+            numbers=numbers,
+            free_count=free_count,
+            show_admin=show_admin,
+            raffle_title=RAFFLE_TITLE,
+            raffle_price=RAFFLE_PRICE,
+            raffle_date=RAFFLE_DATE
+        )
     finally:
         s.close()
 
@@ -216,8 +318,124 @@ def api_state():
     finally:
         s.close()
 
-if __name__ == "__main__":
-    # ADMIN_KEY protege liberar/resetear; ADMIN_VIEW_KEY muestra el panel admin.
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+# --- Exportar a Excel (.xlsx) general ---
+@app.get("/export.xlsx")
+def export_excel():
+    # Autorización: cookie admin o key=ADMIN_KEY en query
+    key = request.args.get("key", "")
+    is_admin_cookie = (request.cookies.get("is_admin") == "1")
+    if not (is_admin_cookie or (key and key == os.environ.get("ADMIN_KEY",""))):
+        return ("No autorizado", 401)
 
+    s = Session()
+    try:
+        rows = s.query(NumberPick).order_by(NumberPick.id.asc()).all()
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Rifa 00-99"
+        ws.append([RAFFLE_TITLE])
+        ws.append([RAFFLE_PRICE, RAFFLE_DATE])
+        ws.append([])
+
+        ws.append(["Número", "Estado", "Nombre", "Actualizado"])
+        for r in rows:
+            ws.append([
+                f"{r.id:02d}",
+                "Ocupado" if r.taken else "Libre",
+                r.name,
+                r.updated_at.strftime("%Y-%m-%d %H:%M:%S")
+            ])
+        for col in ["A","B","C","D"]:
+            ws.column_dimensions[col].width = 20
+
+        bio = io.BytesIO()
+        wb.save(bio)
+        bio.seek(0)
+        fname = f"rifa_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+        return send_file(
+            bio,
+            as_attachment=True,
+            download_name=fname,
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    finally:
+        s.close()
+
+# --- Exportar SOLO ocupados + total recaudado ---
+@app.get("/export-ocupados.xlsx")
+def export_occupied_excel():
+    # Autorización: cookie admin o key=ADMIN_KEY en query
+    key = request.args.get("key", "")
+    is_admin_cookie = (request.cookies.get("is_admin") == "1")
+    if not (is_admin_cookie or (key and key == os.environ.get("ADMIN_KEY",""))):
+        return ("No autorizado", 401)
+
+    s = Session()
+    try:
+        rows = s.query(NumberPick).filter(NumberPick.taken == True).order_by(NumberPick.id.asc()).all()
+        count = len(rows)
+        total = count * PRICE_PER_NUMBER
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Participantes"
+
+        # Encabezado con datos de rifa
+        ws.append([RAFFLE_TITLE])
+        ws.append([RAFFLE_PRICE, RAFFLE_DATE])
+        ws.append([f"Precio por número (valor numérico): {PRICE_PER_NUMBER}"])
+        ws.append([])
+
+        # Tabla de ocupados
+        ws.append(["#", "Número", "Nombre", "Fecha/Hora (UTC)"])
+        for i, r in enumerate(rows, start=1):
+            ws.append([
+                i,
+                f"{r.id:02d}",
+                r.name,
+                r.updated_at.strftime("%Y-%m-%d %H:%M:%S")
+            ])
+
+        ws.append([])
+        ws.append(["Total ocupados", count])
+        ws.append(["Precio por número", PRICE_PER_NUMBER])
+        ws.append(["Total recaudado", total])
+
+        # Ajuste de anchos
+        for col in ["A","B","C","D","E"]:
+            if col in ws.column_dimensions:
+                ws.column_dimensions[col].width = 22
+
+        bio = io.BytesIO()
+        wb.save(bio)
+        bio.seek(0)
+        fname = f"rifa_ocupados_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+        return send_file(
+            bio,
+            as_attachment=True,
+            download_name=fname,
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    finally:
+        s.close()
+
+# --- Login/Logout de panel admin por cookie ---
+@app.get("/admin-login")
+def admin_login():
+    key = request.args.get("key", "")
+    resp = redirect(url_for("index"))
+    if key == ADMIN_VIEW_KEY and ADMIN_VIEW_KEY:
+        # Cookie válida por 24h
+        resp.set_cookie("is_admin", "1", max_age=86400, secure=True, httponly=True, samesite="Lax")
+    return resp
+
+@app.get("/admin-logout")
+def admin_logout():
+    resp = redirect(url_for("index"))
+    resp.delete_cookie("is_admin")
+    return resp
+
+if __name__ == "__main__":
+    # ADMIN_KEY protege liberar/resetear/exportar; ADMIN_VIEW_KEY habilita ver el panel.
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
 
