@@ -96,7 +96,7 @@ HTML = """
   <div class="meta">Números libres: <strong id="free-count">{{ free_count }}</strong> / 100</div>
 
   <div class="topbar">
-    <input id="nombre" type="text" placeholder="Tu nombre (obligatorio)">
+    <input id="nombre" type="text" placeholder="Tu nombre (opcional)">
     <button onclick="share()">Compartir enlace</button>
   </div>
 
@@ -151,9 +151,11 @@ HTML = """
 
 <script>
 function ensureName(form){
-  var n = document.getElementById('nombre').value.trim();
-  if(!n){ alert("Escribí tu nombre antes de elegir un número."); return false; }
-  form.querySelector('input[name=name]').value = n;
+  // Siempre enviamos; si no hay nombre, el servidor pondrá "(Sin nombre)"
+  var n = document.getElementById('nombre');
+  if(n){
+    form.querySelector('input[name=name]').value = n.value.trim();
+  }
   return true;
 }
 function share(){
@@ -248,8 +250,10 @@ def index():
 @app.post("/pick/<num>")
 def pick(num):
     name = (request.form.get("name") or "").strip()
-    if not (len(num)==2 and num.isdigit() and name):
+    if not (len(num)==2 and num.isdigit()):
         return redirect(url_for("index"))
+    if not name:
+        name = "(Sin nombre)"  # <-- valor por defecto si no escriben
     idx = int(num)
     with lock:
         s = Session()
@@ -321,7 +325,6 @@ def api_state():
 # --- Exportar a Excel (.xlsx) general ---
 @app.get("/export.xlsx")
 def export_excel():
-    # Autorización: cookie admin o key=ADMIN_KEY en query
     key = request.args.get("key", "")
     is_admin_cookie = (request.cookies.get("is_admin") == "1")
     if not (is_admin_cookie or (key and key == os.environ.get("ADMIN_KEY",""))):
@@ -364,7 +367,6 @@ def export_excel():
 # --- Exportar SOLO ocupados + total recaudado ---
 @app.get("/export-ocupados.xlsx")
 def export_occupied_excel():
-    # Autorización: cookie admin o key=ADMIN_KEY en query
     key = request.args.get("key", "")
     is_admin_cookie = (request.cookies.get("is_admin") == "1")
     if not (is_admin_cookie or (key and key == os.environ.get("ADMIN_KEY",""))):
@@ -380,13 +382,11 @@ def export_occupied_excel():
         ws = wb.active
         ws.title = "Participantes"
 
-        # Encabezado con datos de rifa
         ws.append([RAFFLE_TITLE])
         ws.append([RAFFLE_PRICE, RAFFLE_DATE])
         ws.append([f"Precio por número (valor numérico): {PRICE_PER_NUMBER}"])
         ws.append([])
 
-        # Tabla de ocupados
         ws.append(["#", "Número", "Nombre", "Fecha/Hora (UTC)"])
         for i, r in enumerate(rows, start=1):
             ws.append([
@@ -401,7 +401,6 @@ def export_occupied_excel():
         ws.append(["Precio por número", PRICE_PER_NUMBER])
         ws.append(["Total recaudado", total])
 
-        # Ajuste de anchos
         for col in ["A","B","C","D","E"]:
             if col in ws.column_dimensions:
                 ws.column_dimensions[col].width = 22
@@ -425,7 +424,6 @@ def admin_login():
     key = request.args.get("key", "")
     resp = redirect(url_for("index"))
     if key == ADMIN_VIEW_KEY and ADMIN_VIEW_KEY:
-        # Cookie válida por 24h
         resp.set_cookie("is_admin", "1", max_age=86400, secure=True, httponly=True, samesite="Lax")
     return resp
 
