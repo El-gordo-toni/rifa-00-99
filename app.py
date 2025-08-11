@@ -14,12 +14,14 @@ lock = threading.Lock()
 
 # --- Claves de administración ---
 ADMIN_VIEW_KEY = os.environ.get("ADMIN_VIEW_KEY", "")  # ver panel admin
-# ADMIN_KEY protege liberar/resetear/exportar (se lee directamente en rutas)
+# ADMIN_KEY protege liberar/resetear/exportar (se usa en rutas)
 
 # --- Datos de la rifa ---
 RAFFLE_TITLE = os.environ.get("RAFFLE_TITLE", "Rifa: Bolsa de Golf Wilson")
 RAFFLE_PRICE = os.environ.get("RAFFLE_PRICE", "Valor 10 pesos")
 RAFFLE_DATE  = os.environ.get("RAFFLE_DATE",  "Se sorteará el 13 de Septiembre")
+BANK_INFO = os.environ.get("BANK_INFO", "").strip()
+
 try:
     PRICE_PER_NUMBER = float(os.environ.get("RAFFLE_PRICE_VALUE", "10"))
 except ValueError:
@@ -58,9 +60,10 @@ HTML = """
   .wrap{max-width:920px;margin:auto}
   h1{margin:0 0 4px}
   .meta{color:var(--muted);margin-bottom:16px}
-  .banner{border:1px solid #e5e5e5; border-radius:14px; padding:12px 14px; margin:8px 0 16px; display:flex; gap:10px; align-items:center; background:#fafafa;}
+  .banner{border:1px solid #e5e5e5; border-radius:14px; padding:12px 14px; margin:8px 0 12px; display:flex; gap:10px; align-items:center; background:#fafafa;}
   .badge{background:var(--primary);color:#fff;padding:4px 10px;border-radius:999px;font-weight:600}
-  .alert{background:#fff3cd;border:1px solid #ffeeba;border-radius:10px;padding:8px 12px;margin:10px 0;color:#856404}
+  .bank-btns{display:flex; gap:8px; flex-wrap:wrap; margin:8px 0 14px}
+  .bank-inline{background:#e8f3ff;border:1px solid #cfe4ff;color:#0b3d91;border-radius:12px;padding:8px 10px}
   .grid{display:grid;grid-template-columns:repeat(10,1fr);gap:8px}
   .cell{padding:10px;border-radius:10px;text-align:center;border:1px solid #ddd}
   .free{background:var(--bgfree)}
@@ -76,6 +79,16 @@ HTML = """
   details{margin-top:24px}
   .row{display:flex;gap:8px;align-items:center;margin:6px 0}
   .mono{font-variant-numeric:tabular-nums}
+
+  /* Modal bancario */
+  .modal-backdrop{
+    position:fixed; inset:0; background:rgba(0,0,0,.45); display:none; align-items:center; justify-content:center; z-index:9999;
+  }
+  .modal{background:#fff; border-radius:16px; max-width:560px; width:92%; padding:16px; box-shadow:0 10px 30px rgba(0,0,0,.2)}
+  .modal h2{margin:0 0 8px}
+  .modal p{margin:8px 0 0; word-break:break-word}
+  .modal .actions{display:flex; gap:8px; justify-content:flex-end; margin-top:14px; flex-wrap:wrap}
+  .modal .ghost{background:#f2f2f2}
 </style>
 </head>
 <body>
@@ -89,8 +102,18 @@ HTML = """
     </div>
   </div>
 
+  {% if bank_info %}
+    <div class="bank-btns">
+      <span class="bank-inline"><strong>Datos bancarios disponibles</strong></span>
+      <button type="button" onclick="openBankModal()">Ver datos bancarios</button>
+      <button type="button" onclick="copyBankInfo()">Copiar</button>
+    </div>
+  {% endif %}
+
   {% if error_msg %}
-    <div class="alert">{{ error_msg }}</div>
+    <div class="bank-inline" style="background:#fff3cd;border-color:#ffeeba;color:#856404;">
+      {{ error_msg }}
+    </div>
   {% endif %}
 
   <div class="meta">Números libres: <strong id="free-count">{{ free_count }}</strong> / 100</div>
@@ -145,6 +168,20 @@ HTML = """
   {% endif %}
 </div>
 
+{% if bank_info %}
+<!-- Modal de datos bancarios -->
+<div id="bankModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="bankTitle">
+  <div class="modal">
+    <h2 id="bankTitle">Datos bancarios</h2>
+    <p id="bankText">{{ bank_info }}</p>
+    <div class="actions">
+      <button class="ghost" type="button" onclick="closeBankModal()">Cerrar</button>
+      <button type="button" onclick="copyBankInfo()">Copiar</button>
+    </div>
+  </div>
+</div>
+{% endif %}
+
 <script>
 function share(){
   if (navigator.share){ navigator.share({title:document.title, url: window.location.href}); }
@@ -163,6 +200,35 @@ function downloadExcelOcupados(){
   window.location.href = `/export-ocupados.xlsx?key=${encodeURIComponent(k)}`;
 }
 
+// Modal bancario
+function openBankModal(){
+  const m = document.getElementById('bankModal'); if(m){ m.style.display='flex'; }
+}
+function closeBankModal(){
+  const m = document.getElementById('bankModal'); if(m){ m.style.display='none'; }
+}
+async function copyBankInfo(){
+  const el = document.getElementById('bankText');
+  if(!el) return;
+  try{
+    await navigator.clipboard.writeText(el.textContent);
+    alert("Datos bancarios copiados.");
+  }catch(e){
+    // Fallback para navegadores antiguos
+    const ta = document.createElement('textarea');
+    ta.value = el.textContent;
+    document.body.appendChild(ta);
+    ta.select(); document.execCommand('copy');
+    document.body.removeChild(ta);
+    alert("Datos bancarios copiados.");
+  }
+}
+// Abrir modal automáticamente si ?bank=1
+(function(){
+  const params = new URLSearchParams(window.location.search);
+  if(params.get('bank') === '1'){ openBankModal(); }
+})();
+
 // Render helpers
 function renderFreeCell(num){
   return `
@@ -177,7 +243,7 @@ function renderTakenCell(num, name){
   `;
 }
 
-// AJAX elegir número (requiere nombre + confirmación)
+// Elegir número (validación + confirmación)
 async function pickNumber(num, btn){
   const nameInput = document.getElementById('nombre');
   const name = nameInput ? nameInput.value.trim() : "";
@@ -186,11 +252,9 @@ async function pickNumber(num, btn){
     if(nameInput) nameInput.focus();
     return;
   }
-
   if(!confirm(`¿Confirmás elegir el número ${num} a nombre de "${name}"?`)){
     return;
   }
-
   if(btn){ btn.disabled = true; }
   try{
     const fd = new FormData();
@@ -267,6 +331,7 @@ def index():
             raffle_title=RAFFLE_TITLE,
             raffle_price=RAFFLE_PRICE,
             raffle_date=RAFFLE_DATE,
+            bank_info=BANK_INFO,
             error_msg=error_msg
         )
     finally:
@@ -371,6 +436,8 @@ def export_excel():
         ws.title = "Rifa 00-99"
         ws.append([RAFFLE_TITLE])
         ws.append([RAFFLE_PRICE, RAFFLE_DATE])
+        if BANK_INFO:
+            ws.append([f"Datos bancarios: {BANK_INFO}"])
         ws.append([])
 
         ws.append(["Número", "Estado", "Nombre", "Actualizado"])
@@ -417,6 +484,8 @@ def export_occupied_excel():
 
         ws.append([RAFFLE_TITLE])
         ws.append([RAFFLE_PRICE, RAFFLE_DATE])
+        if BANK_INFO:
+            ws.append([f"Datos bancarios: {BANK_INFO}"])
         ws.append([f"Precio por número (valor numérico): {PRICE_PER_NUMBER}"])
         ws.append([])
 
@@ -468,4 +537,5 @@ def admin_logout():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+
 
