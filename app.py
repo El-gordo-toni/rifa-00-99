@@ -60,13 +60,14 @@ HTML = """
   .meta{color:var(--muted);margin-bottom:16px}
   .banner{border:1px solid #e5e5e5; border-radius:14px; padding:12px 14px; margin:8px 0 16px; display:flex; gap:10px; align-items:center; background:#fafafa;}
   .badge{background:var(--primary);color:#fff;padding:4px 10px;border-radius:999px;font-weight:600}
+  .alert{background:#fff3cd;border:1px solid #ffeeba;border-radius:10px;padding:8px 12px;margin:10px 0;color:#856404}
   .grid{display:grid;grid-template-columns:repeat(10,1fr);gap:8px}
   .cell{padding:10px;border-radius:10px;text-align:center;border:1px solid #ddd}
   .free{background:var(--bgfree)}
   .taken{background:var(--bgtaken);color:#555}
   .cell small{display:block;font-size:12px;color:#666;margin-top:4px}
   .topbar{display:flex;gap:8px;align-items:center;margin:12px 0 16px}
-  input[type=text]{padding:8px;border:1px solid #ccc;border-radius:8px;flex:1;min-width:160px}
+  input[type=text]{padding:8px;border:1px solid #ccc;border-radius:8px;flex:1;min-width:180px}
   button{padding:8px 10px;border:0;border-radius:10px;cursor:pointer}
   .pick{background:var(--primary);color:white}
   .disabled{opacity:.6;cursor:not-allowed}
@@ -86,10 +87,14 @@ HTML = """
     </div>
   </div>
 
+  {% if error_msg %}
+    <div class="alert">{{ error_msg }}</div>
+  {% endif %}
+
   <div class="meta">Números libres: <strong id="free-count">{{ free_count }}</strong> / 100</div>
 
   <div class="topbar">
-    <input id="nombre" type="text" placeholder="Tu nombre (opcional)">
+    <input id="nombre" type="text" placeholder="Tu nombre (obligatorio)">
     <button onclick="share()">Compartir enlace</button>
   </div>
 
@@ -102,13 +107,8 @@ HTML = """
            data-name="{{ n.name|e }}">
         <div class="mono"><strong>{{ "%02d" % n.id }}</strong></div>
         {% if not n.taken %}
-          <!-- Fallback sin JS -->
-          <form method="post" action="{{ url_for('pick', num='%02d' % n.id) }}" onsubmit="return ensureName(this)">
-            <input type="hidden" name="name" value="">
-            <button class="pick" type="submit">Elegir</button>
-          </form>
-          <!-- Botón AJAX (JS) -->
-          <button class="pick" type="button" onclick="pickNumber('{{ '%02d' % n.id }}')">Elegir</button>
+          <!-- Un solo botón (AJAX) -->
+          <button class="pick" type="button" onclick="pickNumber('{{ '%02d' % n.id }}', this)">Elegir</button>
         {% else %}
           <small>Ocupado por: {{ n.name }}</small>
         {% endif %}
@@ -138,26 +138,16 @@ HTML = """
 </div>
 
 <script>
-function ensureName(form){
-  // fallback: completamos el hidden, pero no bloqueamos jamás el submit
-  var n = document.getElementById('nombre');
-  if(n){ form.querySelector('input[name=name]').value = n.value.trim(); }
-  return true;
-}
 function share(){
   if (navigator.share){ navigator.share({title:document.title, url: window.location.href}); }
   else { navigator.clipboard.writeText(window.location.href); alert("Enlace copiado. Pegalo en el grupo de WhatsApp."); }
 }
 
-// --- Helpers de render ---
+// Render helpers
 function renderFreeCell(num){
   return `
     <div class="mono"><strong>${num}</strong></div>
-    <form method="post" action="/pick/${num}" onsubmit="return ensureName(this)">
-      <input type="hidden" name="name" value="">
-      <button class="pick" type="submit">Elegir</button>
-    </form>
-    <button class="pick" type="button" onclick="pickNumber('${num}')">Elegir</button>
+    <button class="pick" type="button" onclick="pickNumber('${num}', this)">Elegir</button>
   `;
 }
 function renderTakenCell(num, name){
@@ -167,26 +157,43 @@ function renderTakenCell(num, name){
   `;
 }
 
-// --- AJAX: elegir número sin recargar ---
-async function pickNumber(num){
+// AJAX elegir número (requiere nombre)
+async function pickNumber(num, btn){
+  const nameInput = document.getElementById('nombre');
+  const name = nameInput ? nameInput.value.trim() : "";
+  if(!name){
+    alert("Escribí tu nombre para poder elegir.");
+    if(nameInput) nameInput.focus();
+    return;
+  }
+  if(btn){ btn.disabled = true; }
   try{
     const fd = new FormData();
-    const n = document.getElementById('nombre');
-    fd.append('name', n ? n.value.trim() : '');
-    const res = await fetch(`/pick/${num}`, { method:'POST', body: fd });
-    // ignoramos la respuesta/redirect, refrescamos estado
+    fd.append('name', name);
+    const res = await fetch(`/pick/${num}`, {
+      method:'POST',
+      headers: {'X-Requested-With':'XMLHttpRequest'},
+      body: fd
+    });
+    if(!res.ok){
+      const txt = await res.text();
+      alert(txt || "No se pudo completar la reserva.");
+      return;
+    }
     await refreshState();
   }catch(e){
-    // opcional: alert("No se pudo elegir el número. Intentá de nuevo.");
+    alert("No se pudo completar la reserva. Revisá tu conexión e intentá de nuevo.");
+  }finally{
+    if(btn){ btn.disabled = false; }
   }
 }
 
-// --- Polling cada 5s para refrescar estado ---
+// Polling cada 5s
 async function refreshState(){
   try{
     const res = await fetch('/api/state', {cache:'no-store'});
     if(!res.ok) return;
-    const data = await res.json(); // [{num:"00", taken:true/false, name:""}...]
+    const data = await res.json();
     let freeCount = 0;
     for(const item of data){
       const id = 'cell-' + item.num;
@@ -226,6 +233,8 @@ def index():
             (request.args.get("admin", "") == ADMIN_VIEW_KEY and ADMIN_VIEW_KEY != "")
             or (request.cookies.get("is_admin") == "1")
         )
+        # mensaje si volvió con error (modo no-AJAX)
+        error_msg = "Escribí tu nombre para poder elegir." if request.args.get("err") == "noname" else ""
         return render_template_string(
             HTML,
             numbers=numbers,
@@ -233,7 +242,8 @@ def index():
             show_admin=show_admin,
             raffle_title=RAFFLE_TITLE,
             raffle_price=RAFFLE_PRICE,
-            raffle_date=RAFFLE_DATE
+            raffle_date=RAFFLE_DATE,
+            error_msg=error_msg
         )
     finally:
         s.close()
@@ -244,7 +254,11 @@ def pick(num):
     if not (len(num)==2 and num.isdigit()):
         return redirect(url_for("index"))
     if not name:
-        name = "(Sin nombre)"
+        # Si es AJAX, devolvemos error 400; si es form normal, redirigimos con mensaje
+        if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+            return ("NOMBRE_REQUERIDO", 400)
+        return redirect(url_for("index", err="noname"))
+
     idx = int(num)
     with lock:
         s = Session()
@@ -257,9 +271,11 @@ def pick(num):
                 s.commit()
         except OperationalError:
             s.rollback()
+            if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+                return ("ERROR_DB", 500)
         finally:
             s.close()
-    # para fetch no hace falta redirigir; pero si viniera del form, redirigimos
+
     if request.headers.get("X-Requested-With") == "XMLHttpRequest":
         return ("OK", 200)
     return redirect(url_for("index"))
@@ -383,12 +399,12 @@ def export_occupied_excel():
 
         ws.append(["#", "Número", "Nombre", "Fecha/Hora (UTC)"])
         for i, r in enumerate(rows, start=1):
-            ws.append([
-                i,
-                f"{r.id:02d}",
-                r.name,
-                r.updated_at.strftime("%Y-%m-%d %H:%M:%S")
-            ])
+          ws.append([
+              i,
+              f"{r.id:02d}",
+              r.name,
+              r.updated_at.strftime("%Y-%m-%d %H:%M:%S")
+          ])
 
         ws.append([])
         ws.append(["Total ocupados", count])
