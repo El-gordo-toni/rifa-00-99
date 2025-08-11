@@ -11,6 +11,11 @@ Session = sessionmaker(bind=engine)
 Base = declarative_base()
 lock = threading.Lock()
 
+# --- Claves de administración ---
+# ADMIN_KEY: protege las acciones (liberar/resetear).
+# ADMIN_VIEW_KEY: muestra/oculta el panel admin vía ?admin=ADMIN_VIEW_KEY
+ADMIN_VIEW_KEY = os.environ.get("ADMIN_VIEW_KEY", "")
+
 class NumberPick(Base):
     __tablename__ = "number_picks"
     id = Column(Integer, primary_key=True)      # 0..99
@@ -87,7 +92,8 @@ HTML = """
     {% endfor %}
   </div>
 
-  <details>
+  {% if show_admin %}
+  <details open>
     <summary>Administración</summary>
     <p>Para liberar o reiniciar necesitás la clave de admin (<code>ADMIN_KEY</code>).</p>
     <form class="row" method="post" action="{{ url_for('release', num='00') }}" onsubmit="this.action=this.action.replace('00', document.getElementById('numlib').value);">
@@ -103,6 +109,7 @@ HTML = """
       <a href="{{ url_for('api_state') }}">Ver estado (JSON)</a>
     </div>
   </details>
+  {% endif %}
 </div>
 
 <script>
@@ -131,7 +138,8 @@ def index():
     try:
         numbers = s.query(NumberPick).order_by(NumberPick.id.asc()).all()
         free_count = sum(1 for n in numbers if not n.taken)
-        return render_template_string(HTML, numbers=numbers, free_count=free_count)
+        show_admin = (request.args.get("admin", "") == ADMIN_VIEW_KEY and ADMIN_VIEW_KEY != "")
+        return render_template_string(HTML, numbers=numbers, free_count=free_count, show_admin=show_admin)
     finally:
         s.close()
 
@@ -209,5 +217,6 @@ def api_state():
         s.close()
 
 if __name__ == "__main__":
-    # ADMIN_KEY protege liberar/resetear; definilo en Render.
+    # ADMIN_KEY protege liberar/resetear; ADMIN_VIEW_KEY muestra el panel admin.
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+
