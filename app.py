@@ -1,0 +1,213 @@
+import os, threading, datetime
+from flask import Flask, render_template_string, redirect, url_for, request, jsonify
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime
+from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy.exc import OperationalError
+
+# --- Config base de datos (Postgres si DATABASE_URL, si no SQLite) ---
+DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///state.db")
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+Session = sessionmaker(bind=engine)
+Base = declarative_base()
+lock = threading.Lock()
+
+class NumberPick(Base):
+    __tablename__ = "number_picks"
+    id = Column(Integer, primary_key=True)      # 0..99
+    taken = Column(Boolean, default=False, nullable=False)
+    name = Column(String(80), default="", nullable=False)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+
+def init_db():
+    Base.metadata.create_all(engine)
+    s = Session()
+    try:
+        # poblar 0..99 si está vacío
+        if s.query(NumberPick).count() == 0:
+            for i in range(100):
+                s.add(NumberPick(id=i, taken=False, name=""))
+            s.commit()
+    finally:
+        s.close()
+
+# --- App ---
+app = Flask(__name__)
+init_db()
+
+HTML = """
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Rifa 00–99</title>
+<style>
+  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Helvetica,Arial,sans-serif;margin:20px}
+  .wrap{max-width:900px;margin:auto}
+  h1{margin:0 0 8px}
+  .meta{color:#555;margin-bottom:16px}
+  .grid{display:grid;grid-template-columns:repeat(10,1fr);gap:8px}
+  .cell{padding:10px;border-radius:10px;text-align:center;border:1px solid #ddd}
+  .free{background:#f6fff6}
+  .taken{background:#fff4f4;color:#555}
+  .cell small{display:block;font-size:12px;color:#666;margin-top:4px}
+  .topbar{display:flex;gap:8px;align-items:center;margin:12px 0 16px}
+  input[type=text]{padding:8px;border:1px solid #ccc;border-radius:8px;flex:1;min-width:160px}
+  button{padding:8px 10px;border:0;border-radius:10px;cursor:pointer}
+  .pick{background:#14ae5c;color:white}
+  .disabled{opacity:.6;cursor:not-allowed}
+  details{margin-top:24px}
+  .row{display:flex;gap:8px;align-items:center;margin:6px 0}
+  .mono{font-variant-numeric:tabular-nums}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Rifa 00–99</h1>
+  <div class="meta">Números libres: <strong>{{ free_count }}</strong> / 100</div>
+
+  <div class="topbar">
+    <input id="nombre" type="text" placeholder="Tu nombre (obligatorio)">
+    <button onclick="share()">Compartir enlace</button>
+  </div>
+
+  <div class="grid">
+    {% for n in numbers %}
+      {% if not n.taken %}
+        <form class="cell free" method="post" action="{{ url_for('pick', num='%02d' % n.id) }}" onsubmit="return ensureName(this)">
+          <div class="mono"><strong>{{ "%02d" % n.id }}</strong></div>
+          <input type="hidden" name="name" value="">
+          <button class="pick" type="submit">Elegir</button>
+        </form>
+      {% else %}
+        <div class="cell taken">
+          <div class="mono"><strong>{{ "%02d" % n.id }}</strong></div>
+          <small>Ocupado por: {{ n.name }}</small>
+        </div>
+      {% endif %}
+    {% endfor %}
+  </div>
+
+  <details>
+    <summary>Administración</summary>
+    <p>Para liberar o reiniciar necesitás la clave de admin (<code>ADMIN_KEY</code>).</p>
+    <form class="row" method="post" action="{{ url_for('release', num='00') }}" onsubmit="this.action=this.action.replace('00', document.getElementById('numlib').value);">
+      <input id="numlib" type="text" placeholder="Número (00–99)" pattern="\\d\\d" maxlength="2">
+      <input name="key" type="text" placeholder="ADMIN_KEY">
+      <button type="submit">Liberar</button>
+    </form>
+    <form class="row" method="post" action="{{ url_for('reset') }}">
+      <input name="key" type="text" placeholder="ADMIN_KEY">
+      <button type="submit">Reiniciar todo</button>
+    </form>
+    <div class="row">
+      <a href="{{ url_for('api_state') }}">Ver estado (JSON)</a>
+    </div>
+  </details>
+</div>
+
+<script>
+function ensureName(form){
+  var n = document.getElementById('nombre').value.trim();
+  if(!n){ alert("Escribí tu nombre antes de elegir un número."); return false; }
+  form.querySelector('input[name=name]').value = n;
+  return true;
+}
+function share(){
+  if (navigator.share){
+    navigator.share({title:"Rifa 00–99", url: window.location.href});
+  }else{
+    navigator.clipboard.writeText(window.location.href);
+    alert("Enlace copiado. Pegalo en el grupo de WhatsApp.");
+  }
+}
+</script>
+</body>
+</html>
+"""
+
+@app.get("/")
+def index():
+    s = Session()
+    try:
+        numbers = s.query(NumberPick).order_by(NumberPick.id.asc()).all()
+        free_count = sum(1 for n in numbers if not n.taken)
+        return render_template_string(HTML, numbers=numbers, free_count=free_count)
+    finally:
+        s.close()
+
+@app.post("/pick/<num>")
+def pick(num):
+    name = (request.form.get("name") or "").strip()
+    if not (len(num)==2 and num.isdigit() and name):
+        return redirect(url_for("index"))
+    idx = int(num)
+    with lock:
+        s = Session()
+        try:
+            row = s.get(NumberPick, idx)
+            if row and not row.taken:
+                row.taken = True
+                row.name = name[:80]
+                row.updated_at = datetime.datetime.utcnow()
+                s.commit()
+        except OperationalError:
+            s.rollback()
+        finally:
+            s.close()
+    return redirect(url_for("index"))
+
+@app.post("/release/<num>")
+def release(num):
+    key = request.form.get("key") or ""
+    if key != os.environ.get("ADMIN_KEY",""):
+        return ("No autorizado", 401)
+    if not (len(num)==2 and num.isdigit()):
+        return redirect(url_for("index"))
+    idx = int(num)
+    with lock:
+        s = Session()
+        try:
+            row = s.get(NumberPick, idx)
+            if row:
+                row.taken = False
+                row.name = ""
+                row.updated_at = datetime.datetime.utcnow()
+                s.commit()
+        finally:
+            s.close()
+    return redirect(url_for("index"))
+
+@app.post("/reset")
+def reset():
+    key = request.form.get("key") or ""
+    if key != os.environ.get("ADMIN_KEY",""):
+        return ("No autorizado", 401)
+    with lock:
+        s = Session()
+        try:
+            for i in range(100):
+                row = s.get(NumberPick, i)
+                if row:
+                    row.taken = False
+                    row.name = ""
+                    row.updated_at = datetime.datetime.utcnow()
+            s.commit()
+        finally:
+            s.close()
+    return redirect(url_for("index"))
+
+@app.get("/api/state")
+def api_state():
+    s = Session()
+    try:
+        data = [
+            {"num": f"{n.id:02d}", "taken": n.taken, "name": n.name}
+            for n in s.query(NumberPick).order_by(NumberPick.id.asc()).all()
+        ]
+        return jsonify(data)
+    finally:
+        s.close()
+
+if __name__ == "__main__":
+    # ADMIN_KEY protege liberar/resetear; definilo en Render.
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
