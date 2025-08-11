@@ -13,7 +13,7 @@ lock = threading.Lock()
 
 # --- Claves de administración ---
 # ADMIN_KEY: protege las acciones (liberar/resetear).
-# ADMIN_VIEW_KEY: controla la visibilidad del panel admin.
+# ADMIN_VIEW_KEY: muestra/oculta el panel admin vía ?admin=ADMIN_VIEW_KEY
 ADMIN_VIEW_KEY = os.environ.get("ADMIN_VIEW_KEY", "")
 
 class NumberPick(Base):
@@ -68,30 +68,27 @@ HTML = """
 <body>
 <div class="wrap">
   <h1>Rifa 00–99</h1>
-  <div class="meta">Números libres: <strong id="free-count">{{ free_count }}</strong> / 100</div>
+  <div class="meta">Números libres: <strong>{{ free_count }}</strong> / 100</div>
 
   <div class="topbar">
     <input id="nombre" type="text" placeholder="Tu nombre (obligatorio)">
     <button onclick="share()">Compartir enlace</button>
   </div>
 
-  <div class="grid" id="grid">
+  <div class="grid">
     {% for n in numbers %}
-      <div class="cell {% if n.taken %}taken{% else %}free{% endif %}" 
-           id="cell-{{'%02d' % n.id}}" 
-           data-num="{{'%02d' % n.id}}" 
-           data-taken="{{ 1 if n.taken else 0 }}" 
-           data-name="{{ n.name|e }}">
-        <div class="mono"><strong>{{ "%02d" % n.id }}</strong></div>
-        {% if not n.taken %}
-          <form method="post" action="{{ url_for('pick', num='%02d' % n.id) }}" onsubmit="return ensureName(this)">
-            <input type="hidden" name="name" value="">
-            <button class="pick" type="submit" onclick="this.disabled=true">Elegir</button>
-          </form>
-        {% else %}
+      {% if not n.taken %}
+        <form class="cell free" method="post" action="{{ url_for('pick', num='%02d' % n.id) }}" onsubmit="return ensureName(this)">
+          <div class="mono"><strong>{{ "%02d" % n.id }}</strong></div>
+          <input type="hidden" name="name" value="">
+          <button class="pick" type="submit">Elegir</button>
+        </form>
+      {% else %}
+        <div class="cell taken">
+          <div class="mono"><strong>{{ "%02d" % n.id }}</strong></div>
           <small>Ocupado por: {{ n.name }}</small>
-        {% endif %}
-      </div>
+        </div>
+      {% endif %}
     {% endfor %}
   </div>
 
@@ -110,9 +107,6 @@ HTML = """
     </form>
     <div class="row">
       <a href="{{ url_for('api_state') }}">Ver estado (JSON)</a>
-    </div>
-    <div class="row">
-      <a href="{{ url_for('admin_logout') }}">Cerrar panel</a>
     </div>
   </details>
   {% endif %}
@@ -133,62 +127,6 @@ function share(){
     alert("Enlace copiado. Pegalo en el grupo de WhatsApp.");
   }
 }
-
-// --- Render helpers ---
-function renderFreeCell(num){
-  return `
-    <div class="mono"><strong>${num}</strong></div>
-    <form method="post" action="/pick/${num}" onsubmit="return ensureName(this)">
-      <input type="hidden" name="name" value="">
-      <button class="pick" type="submit" onclick="this.disabled=true">Elegir</button>
-    </form>
-  `;
-}
-function renderTakenCell(num, name){
-  return `
-    <div class="mono"><strong>${num}</strong></div>
-    <small>Ocupado por: ${name ? name.replace(/</g,"&lt;").replace(/>/g,"&gt;") : ""}</small>
-  `;
-}
-
-// --- Polling cada 5s para refrescar estado ---
-async function refreshState(){
-  try{
-    const res = await fetch('/api/state', {cache:'no-store'});
-    if(!res.ok) return;
-    const data = await res.json(); // [{num:"00", taken:true/false, name:""}...]
-    let freeCount = 0;
-    for(const item of data){
-      const id = 'cell-' + item.num;
-      const el = document.getElementById(id);
-      if(!el) continue;
-      const prevTaken = el.getAttribute('data-taken') === '1';
-      if(item.taken){
-        el.classList.remove('free'); el.classList.add('taken');
-        el.setAttribute('data-taken','1');
-        el.setAttribute('data-name', item.name || "");
-        // Si cambió a taken, re-render
-        if(!prevTaken){
-          el.innerHTML = renderTakenCell(item.num, item.name || "");
-        }
-      }else{
-        freeCount++;
-        el.classList.remove('taken'); el.classList.add('free');
-        el.setAttribute('data-taken','0');
-        el.setAttribute('data-name','');
-        // Si cambió a libre, re-render
-        if(prevTaken){
-          el.innerHTML = renderFreeCell(item.num);
-        }
-      }
-    }
-    const fc = document.getElementById('free-count');
-    if(fc) fc.textContent = freeCount.toString();
-  }catch(e){
-    // silencio: si falla una vez, vuelve a intentar en el próximo tick
-  }
-}
-setInterval(refreshState, 5000);
 </script>
 </body>
 </html>
@@ -200,10 +138,7 @@ def index():
     try:
         numbers = s.query(NumberPick).order_by(NumberPick.id.asc()).all()
         free_count = sum(1 for n in numbers if not n.taken)
-        show_admin = (
-            (request.args.get("admin", "") == ADMIN_VIEW_KEY and ADMIN_VIEW_KEY != "")
-            or (request.cookies.get("is_admin") == "1")
-        )
+        show_admin = (request.args.get("admin", "") == ADMIN_VIEW_KEY and ADMIN_VIEW_KEY != "")
         return render_template_string(HTML, numbers=numbers, free_count=free_count, show_admin=show_admin)
     finally:
         s.close()
@@ -281,24 +216,8 @@ def api_state():
     finally:
         s.close()
 
-# --- Login/Logout de panel admin por cookie ---
-@app.get("/admin-login")
-def admin_login():
-    key = request.args.get("key", "")
-    resp = redirect(url_for("index"))
-    if key == ADMIN_VIEW_KEY and ADMIN_VIEW_KEY:
-        # Cookie válida por 24h
-        resp.set_cookie("is_admin", "1", max_age=86400, secure=True, httponly=True, samesite="Lax")
-    return resp
-
-@app.get("/admin-logout")
-def admin_logout():
-    resp = redirect(url_for("index"))
-    resp.delete_cookie("is_admin")
-    return resp
-
 if __name__ == "__main__":
-    # ADMIN_KEY protege liberar/resetear; ADMIN_VIEW_KEY habilita ver el panel.
+    # ADMIN_KEY protege liberar/resetear; ADMIN_VIEW_KEY muestra el panel admin.
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
 
 
