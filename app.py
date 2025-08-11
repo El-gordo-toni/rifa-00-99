@@ -107,7 +107,6 @@ HTML = """
            data-name="{{ n.name|e }}">
         <div class="mono"><strong>{{ "%02d" % n.id }}</strong></div>
         {% if not n.taken %}
-          <!-- Un solo botón (AJAX) -->
           <button class="pick" type="button" onclick="pickNumber('{{ '%02d' % n.id }}', this)">Elegir</button>
         {% else %}
           <small>Ocupado por: {{ n.name }}</small>
@@ -157,7 +156,7 @@ function renderTakenCell(num, name){
   `;
 }
 
-// AJAX elegir número (requiere nombre)
+// AJAX elegir número (requiere nombre + confirmación)
 async function pickNumber(num, btn){
   const nameInput = document.getElementById('nombre');
   const name = nameInput ? nameInput.value.trim() : "";
@@ -166,6 +165,12 @@ async function pickNumber(num, btn){
     if(nameInput) nameInput.focus();
     return;
   }
+
+  // Confirmación
+  if(!confirm(`¿Confirmás elegir el número ${num} a nombre de "${name}"?`)){
+    return;
+  }
+
   if(btn){ btn.disabled = true; }
   try{
     const fd = new FormData();
@@ -233,7 +238,6 @@ def index():
             (request.args.get("admin", "") == ADMIN_VIEW_KEY and ADMIN_VIEW_KEY != "")
             or (request.cookies.get("is_admin") == "1")
         )
-        # mensaje si volvió con error (modo no-AJAX)
         error_msg = "Escribí tu nombre para poder elegir." if request.args.get("err") == "noname" else ""
         return render_template_string(
             HTML,
@@ -254,7 +258,6 @@ def pick(num):
     if not (len(num)==2 and num.isdigit()):
         return redirect(url_for("index"))
     if not name:
-        # Si es AJAX, devolvemos error 400; si es form normal, redirigimos con mensaje
         if request.headers.get("X-Requested-With") == "XMLHttpRequest":
             return ("NOMBRE_REQUERIDO", 400)
         return redirect(url_for("index", err="noname"))
@@ -399,12 +402,12 @@ def export_occupied_excel():
 
         ws.append(["#", "Número", "Nombre", "Fecha/Hora (UTC)"])
         for i, r in enumerate(rows, start=1):
-          ws.append([
-              i,
-              f"{r.id:02d}",
-              r.name,
-              r.updated_at.strftime("%Y-%m-%d %H:%M:%S")
-          ])
+            ws.append([
+                i,
+                f"{r.id:02d}",
+                r.name,
+                r.updated_at.strftime("%Y-%m-%d %H:%M:%S")
+            ])
 
         ws.append([])
         ws.append(["Total ocupados", count])
