@@ -13,15 +13,13 @@ Base = declarative_base()
 lock = threading.Lock()
 
 # --- Claves de administración ---
-# ADMIN_KEY: protege las acciones (liberar/resetear/exportar).
-# ADMIN_VIEW_KEY: controla la visibilidad del panel admin.
-ADMIN_VIEW_KEY = os.environ.get("ADMIN_VIEW_KEY", "")
+ADMIN_VIEW_KEY = os.environ.get("ADMIN_VIEW_KEY", "")  # ver panel admin
+# ADMIN_KEY protege liberar/resetear/exportar (se lee directamente en rutas)
 
-# --- Datos de la rifa (configurables por variables de entorno) ---
+# --- Datos de la rifa ---
 RAFFLE_TITLE = os.environ.get("RAFFLE_TITLE", "Rifa: Bolsa de Golf Wilson")
 RAFFLE_PRICE = os.environ.get("RAFFLE_PRICE", "Valor 10 pesos")
 RAFFLE_DATE  = os.environ.get("RAFFLE_DATE",  "Se sorteará el 13 de Septiembre")
-# Precio numérico por número para calcular total
 try:
     PRICE_PER_NUMBER = float(os.environ.get("RAFFLE_PRICE_VALUE", "10"))
 except ValueError:
@@ -38,7 +36,6 @@ def init_db():
     Base.metadata.create_all(engine)
     s = Session()
     try:
-        # poblar 0..99 si está vacío
         if s.query(NumberPick).count() == 0:
             for i in range(100):
                 s.add(NumberPick(id=i, taken=False, name=""))
@@ -46,7 +43,6 @@ def init_db():
     finally:
         s.close()
 
-# --- App ---
 app = Flask(__name__)
 init_db()
 
@@ -62,10 +58,7 @@ HTML = """
   .wrap{max-width:920px;margin:auto}
   h1{margin:0 0 4px}
   .meta{color:var(--muted);margin-bottom:16px}
-  .banner{
-    border:1px solid #e5e5e5; border-radius:14px; padding:12px 14px; margin:8px 0 16px;
-    display:flex; gap:10px; align-items:center; background:#fafafa;
-  }
+  .banner{border:1px solid #e5e5e5; border-radius:14px; padding:12px 14px; margin:8px 0 16px; display:flex; gap:10px; align-items:center; background:#fafafa;}
   .badge{background:var(--primary);color:#fff;padding:4px 10px;border-radius:999px;font-weight:600}
   .grid{display:grid;grid-template-columns:repeat(10,1fr);gap:8px}
   .cell{padding:10px;border-radius:10px;text-align:center;border:1px solid #ddd}
@@ -109,10 +102,13 @@ HTML = """
            data-name="{{ n.name|e }}">
         <div class="mono"><strong>{{ "%02d" % n.id }}</strong></div>
         {% if not n.taken %}
+          <!-- Fallback sin JS -->
           <form method="post" action="{{ url_for('pick', num='%02d' % n.id) }}" onsubmit="return ensureName(this)">
             <input type="hidden" name="name" value="">
-            <button class="pick" type="submit" onclick="this.disabled=true">Elegir</button>
+            <button class="pick" type="submit">Elegir</button>
           </form>
+          <!-- Botón AJAX (JS) -->
+          <button class="pick" type="button" onclick="pickNumber('{{ '%02d' % n.id }}')">Elegir</button>
         {% else %}
           <small>Ocupado por: {{ n.name }}</small>
         {% endif %}
@@ -133,48 +129,35 @@ HTML = """
       <input name="key" type="text" placeholder="ADMIN_KEY">
       <button type="submit">Reiniciar todo</button>
     </form>
-    <div class="row">
-      <a href="{{ url_for('api_state') }}">Ver estado (JSON)</a>
-    </div>
-    <div class="row">
-      <a href="{{ url_for('export_excel') }}">Exportar a Excel</a>
-    </div>
-    <div class="row">
-      <a href="{{ url_for('export_occupied_excel') }}">Exportar ocupados + total</a>
-    </div>
-    <div class="row">
-      <a href="{{ url_for('admin_logout') }}">Cerrar panel</a>
-    </div>
+    <div class="row"><a href="{{ url_for('api_state') }}">Ver estado (JSON)</a></div>
+    <div class="row"><a href="{{ url_for('export_excel') }}">Exportar a Excel</a></div>
+    <div class="row"><a href="{{ url_for('export_occupied_excel') }}">Exportar ocupados + total</a></div>
+    <div class="row"><a href="{{ url_for('admin_logout') }}">Cerrar panel</a></div>
   </details>
   {% endif %}
 </div>
 
 <script>
 function ensureName(form){
-  // Siempre enviamos; si no hay nombre, el servidor pondrá "(Sin nombre)"
+  // fallback: completamos el hidden, pero no bloqueamos jamás el submit
   var n = document.getElementById('nombre');
-  if(n){
-    form.querySelector('input[name=name]').value = n.value.trim();
-  }
+  if(n){ form.querySelector('input[name=name]').value = n.value.trim(); }
   return true;
 }
 function share(){
-  if (navigator.share){
-    navigator.share({title:document.title, url: window.location.href});
-  }else{
-    navigator.clipboard.writeText(window.location.href);
-    alert("Enlace copiado. Pegalo en el grupo de WhatsApp.");
-  }
+  if (navigator.share){ navigator.share({title:document.title, url: window.location.href}); }
+  else { navigator.clipboard.writeText(window.location.href); alert("Enlace copiado. Pegalo en el grupo de WhatsApp."); }
 }
 
-// --- Render helpers ---
+// --- Helpers de render ---
 function renderFreeCell(num){
   return `
     <div class="mono"><strong>${num}</strong></div>
     <form method="post" action="/pick/${num}" onsubmit="return ensureName(this)">
       <input type="hidden" name="name" value="">
-      <button class="pick" type="submit" onclick="this.disabled=true">Elegir</button>
+      <button class="pick" type="submit">Elegir</button>
     </form>
+    <button class="pick" type="button" onclick="pickNumber('${num}')">Elegir</button>
   `;
 }
 function renderTakenCell(num, name){
@@ -182,6 +165,20 @@ function renderTakenCell(num, name){
     <div class="mono"><strong>${num}</strong></div>
     <small>Ocupado por: ${name ? name.replace(/</g,"&lt;").replace(/>/g,"&gt;") : ""}</small>
   `;
+}
+
+// --- AJAX: elegir número sin recargar ---
+async function pickNumber(num){
+  try{
+    const fd = new FormData();
+    const n = document.getElementById('nombre');
+    fd.append('name', n ? n.value.trim() : '');
+    const res = await fetch(`/pick/${num}`, { method:'POST', body: fd });
+    // ignoramos la respuesta/redirect, refrescamos estado
+    await refreshState();
+  }catch(e){
+    // opcional: alert("No se pudo elegir el número. Intentá de nuevo.");
+  }
 }
 
 // --- Polling cada 5s para refrescar estado ---
@@ -200,24 +197,18 @@ async function refreshState(){
         el.classList.remove('free'); el.classList.add('taken');
         el.setAttribute('data-taken','1');
         el.setAttribute('data-name', item.name || "");
-        if(!prevTaken){
-          el.innerHTML = renderTakenCell(item.num, item.name || "");
-        }
+        if(!prevTaken){ el.innerHTML = renderTakenCell(item.num, item.name || ""); }
       }else{
         freeCount++;
         el.classList.remove('taken'); el.classList.add('free');
         el.setAttribute('data-taken','0');
         el.setAttribute('data-name','');
-        if(prevTaken){
-          el.innerHTML = renderFreeCell(item.num);
-        }
+        if(prevTaken){ el.innerHTML = renderFreeCell(item.num); }
       }
     }
     const fc = document.getElementById('free-count');
     if(fc) fc.textContent = freeCount.toString();
-  }catch(e){
-    // si falla una vez, se reintenta en el próximo intervalo
-  }
+  }catch(e){}
 }
 setInterval(refreshState, 5000);
 </script>
@@ -253,7 +244,7 @@ def pick(num):
     if not (len(num)==2 and num.isdigit()):
         return redirect(url_for("index"))
     if not name:
-        name = "(Sin nombre)"  # <-- valor por defecto si no escriben
+        name = "(Sin nombre)"
     idx = int(num)
     with lock:
         s = Session()
@@ -268,6 +259,9 @@ def pick(num):
             s.rollback()
         finally:
             s.close()
+    # para fetch no hace falta redirigir; pero si viniera del form, redirigimos
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return ("OK", 200)
     return redirect(url_for("index"))
 
 @app.post("/release/<num>")
@@ -434,6 +428,6 @@ def admin_logout():
     return resp
 
 if __name__ == "__main__":
-    # ADMIN_KEY protege liberar/resetear/exportar; ADMIN_VIEW_KEY habilita ver el panel.
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+
 
