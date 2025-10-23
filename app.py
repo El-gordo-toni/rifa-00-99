@@ -6,11 +6,14 @@ from sqlalchemy.exc import OperationalError
 from openpyxl import Workbook
 
 # --- Config base de datos (Postgres si DATABASE_URL, si no SQLite) ---
-DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:////state.db")
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
-Session = sessionmaker(bind=engine)
-Base = declarative_base()
-lock = threading.Lock()
+DATABASE_URL = os.environ.get("DATABASE_URL", DB_DEFAULT)
+
+# Normalizar la URL para psycopg3 (Render suele dar "postgres://")
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg://", 1)
+elif DATABASE_URL.startswith("postgresql://"):
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
+
 
 # --- Claves de administración ---
 ADMIN_VIEW_KEY = os.environ.get("ADMIN_VIEW_KEY", "")  # ver panel admin
@@ -537,6 +540,7 @@ def admin_logout():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+
 
 
 
