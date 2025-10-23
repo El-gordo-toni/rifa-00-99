@@ -18,8 +18,8 @@ ADMIN_VIEW_KEY = os.environ.get("ADMIN_VIEW_KEY", "")  # ver panel admin
 
 # --- Datos de la rifa ---
 RAFFLE_TITLE = os.environ.get("RAFFLE_TITLE", "Rifa Fin de Año")
-RAFFLE_PRICE = os.environ.get("RAFFLE_PRICE", "Primer premio: Bolsa de Golf Wilson\nSegundo Premio: Termo Stanley\nTercer Premio: Jarra Stanley")
-RAFFLE_DATE  = os.environ.get("RAFFLE_DATE",  "Valor 10 Mil pesos, Se sortea al vender todos los numeros")
+RAFFLE_PRICE = os.environ.get("RAFFLE_PRICE", "Primer premio: Bolsa de Golf Wilson, Segundo Premio: Termo Stanley, Tercer Premio: Jarra Stanley")
+RAFFLE_DATE  = os.environ.get("RAFFLE_DATE",  "Valor 10 Mil pesos, Se sortea al venderse todos los numeros")
 BANK_INFO = os.environ.get("BANK_INFO", "").strip()
 
 try:
@@ -537,6 +537,7 @@ def admin_logout():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+
 
 
 
