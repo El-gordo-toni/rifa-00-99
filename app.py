@@ -6,7 +6,7 @@ from sqlalchemy.exc import OperationalError
 from openpyxl import Workbook
 
 # --- Config base de datos (Postgres si DATABASE_URL, si no SQLite) ---
-DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:////var/data/state.db")
+DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:/var/data/state.db")
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 Session = sessionmaker(bind=engine)
 Base = declarative_base()
