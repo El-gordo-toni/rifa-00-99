@@ -17,7 +17,7 @@ ADMIN_VIEW_KEY = os.environ.get("ADMIN_VIEW_KEY", "")  # ver panel admin
 # ADMIN_KEY protege liberar/resetear/exportar (se usa en rutas)
 
 # --- Datos de la rifa ---
-RAFFLE_TITLE = os.environ.get("RAFFLE_TITLE", "Rifa: Primer premio: Bolsa de Golf Wilson", "Segundo Premio: Termo Stanley", "Tercer Premio: Jarra Stanley")
+RAFFLE_TITLE = os.environ.get("RAFFLE_TITLE", "Rifa: Primer premio: Bolsa de Golf Wilson\nSegundo Premio: Termo Stanley\nTercer Premio: Jarra Stanley")
 RAFFLE_PRICE = os.environ.get("RAFFLE_PRICE", "Valor 10 Mil pesos")
 RAFFLE_DATE  = os.environ.get("RAFFLE_DATE",  "Se sortea al vender todos los numeros")
 BANK_INFO = os.environ.get("BANK_INFO", "").strip()
@@ -537,6 +537,7 @@ def admin_logout():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+
 
 
 
