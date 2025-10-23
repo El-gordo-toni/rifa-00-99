@@ -6,7 +6,7 @@ from sqlalchemy.exc import OperationalError
 from openpyxl import Workbook
 
 # --- Config base de datos (Postgres si DATABASE_URL, si no SQLite) ---
-DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:////var/data/state.db")
+DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:////state.db")
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 Session = sessionmaker(bind=engine)
 Base = declarative_base()
@@ -537,6 +537,7 @@ def admin_logout():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+
 
 
 
