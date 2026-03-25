@@ -1,5 +1,5 @@
 flask==3.0.3
-gunicorn==22.0.0
+gunicorn
 SQLAlchemy==2.0.32
 psycopg[binary]==3.2.11
 openpyxl==3.1.5
